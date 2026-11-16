@@ -1,6 +1,15 @@
 # KDMapper
 
-KDMapper is a simple tool that exploits iqvw64e.sys Intel driver to manually map non-signed drivers in memory
+## 具体有什么区别
+
+- 将漏驱换为目前不在“Microsoft易受攻击的驱动程序阻止列表”的ktapi.sys
+- 尽管如此，依旧需要关闭HVCI（“内存完整性”）
+
+## 有何意义
+
+- 玩
+
+KDMapper is a simple tool that exploits ktapi.sys vulnerable driver to manually map non-signed drivers in memory
 
 Tested from **Windows 10 1607** to **Windows 11 25H2 26200.8875** :heavy_check_mark:
 
@@ -29,7 +38,7 @@ Tested from **Windows 10 1607** to **Windows 11 25H2 26200.8875** :heavy_check_m
 	Clears g_KernelHashBucketList
 	Clears Wdfilter RuntimeDriverList RuntimeDriverCount and RuntimeDriverArry
 	Use NtLoadDriver and NtUnloadDriver for less traces
-	Prevent load if \Device\Nal exists (Prevents BSOD)
+	Prevent load if \Device\ktapi exists (Prevents BSOD)
 	Header section skipped while copying driver to kernel
 	Added the possibility to modify params before call driver entry
 	Added PDB_OFFSETS macro that will allow the use of Offset PDB features (choose the target build)
@@ -54,13 +63,13 @@ Tested from **Windows 10 1607** to **Windows 11 25H2 26200.8875** :heavy_check_m
 ### BSOD with a simple driver
 In DriverEntry, **DriverObject and RegistryPath** are **NULL** unless you specify anything! this is a manual mapped driver and **not a normal loading procedure**
 
-### Error \\Device\\Nal is already in use.
+### Error \\Device\\ktapi is already in use.
 
-This means that there is a intel driver already loaded or another instance of kdmapper is running or kdmapper crashed and didn't unload the previous driver.
+This means that a ktapi driver already loaded or another instance of kdmapper is running or kdmapper crashed and didn't unload the previous driver.
 
 If you are sure that there is no other instance of kdmapper running, you can try to restart your computer to fix this issue.
 
-If the problem persists, you can try to unload the intel driver manually (If the driver was loaded with kdmapper will have a random name and will be located in %temp%), if not, the driver name is iqvw64e.sys and is installed with your network drivers.
+If the problem persists, you can try to unload the ktapi driver manually (If the driver was loaded with kdmapper will have a random name and will be located in %temp%).
 
 ### Errors 0xC0000022 and 0xC000009A:
 

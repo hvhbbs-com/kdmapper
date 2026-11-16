@@ -63,7 +63,7 @@ NTSTATUS service::RegisterAndStart(const std::wstring& driver_path, const std::w
 	kdmLog("[+] NtLoadDriver Status 0x" << std::hex << ntStatus << std::endl);
 
 	if (ntStatus == STATUS_IMAGE_CERT_REVOKED) {
-		kdmLog("[-] Your vulnerable driver list is enabled and have blocked the driver loading, you must disable vulnerable driver list to use kdmapper with intel driver" << std::endl);
+		kdmLog("[-] Your vulnerable driver list is enabled and have blocked the driver loading, you must disable vulnerable driver list to use kdmapper with ktapi driver" << std::endl);
 		kdmLog("[-] Registry path to disable vulnerable driver list: HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\CI\\Config" << std::endl);
 		kdmLog("[-] Set 'VulnerableDriverBlocklistEnable' as dword to 0" << std::endl);
 	}

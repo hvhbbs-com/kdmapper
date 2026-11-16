@@ -9,9 +9,11 @@
 
 namespace intel_driver
 {
-	constexpr ULONG32 ioctl1 = 0x80862007;
+	constexpr ULONG32 ioctl_map = 0x82007000;
+	constexpr ULONG32 ioctl_unmap = 0x82007100;
 	extern HANDLE hDevice;
 	extern ULONG64 ntoskrnlAddr;
+	extern ULONG64 pagingBase;
 
 	bool ClearPiDDBCacheTable();
 	bool ExAcquireResourceExclusiveLite(PVOID Resource, BOOLEAN wait);
@@ -35,7 +37,6 @@ namespace intel_driver
 
 	bool MemCopy(uint64_t destination, uint64_t source, uint64_t size);
 	bool SetMemory(uint64_t address, uint32_t value, uint64_t size);
-	bool GetPhysicalAddress(uint64_t address, uint64_t* out_physical_address);
 	uint64_t MapIoSpace(uint64_t physical_address, uint32_t size);
 	bool UnmapIoSpace(uint64_t address, uint32_t size);
 	bool ReadMemory(uint64_t address, void* buffer, uint64_t size);
@@ -53,6 +54,9 @@ namespace intel_driver
 	bool ClearMmUnloadedDrivers();
 	std::wstring GetDriverNameW();
 	std::wstring GetDriverPath();
+
+	bool LocatePagingBase();
+	uint64_t VirtualToPhysical(uint64_t virtual_address);
 
 	template<typename T, typename ...A>
 	bool CallKernelFunction(T* out_result, uint64_t kernel_function_address, const A ...arguments) {
