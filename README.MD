@@ -2,6 +2,8 @@
 
 ## 具体有什么区别
 
+<img width="1488" height="678" alt="0c0695a771c805c5ad364deadd98222c" src="https://github.com/user-attachments/assets/ed24493f-dc34-4b2a-a006-318591701145" />
+
 - 将漏驱换为目前不在“Microsoft易受攻击的驱动程序阻止列表”的ktapi.sys
 - 尽管如此，依旧需要关闭HVCI（“内存完整性”）
 
